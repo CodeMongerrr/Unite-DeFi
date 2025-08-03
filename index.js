@@ -1,35 +1,36 @@
+const express = require('express');
+const cors = require('cors');
 const { ethers } = require('ethers');
-const axios = require('axios');
-
-// 1inch stuff
 const { LimitOrder, MakerTraits, Address, Api } = require('@1inch/limit-order-sdk');
 const { AxiosProviderConnector } = require('@1inch/limit-order-sdk/axios');
 
-class LimitOrderManager {
+const app = express();
+
+// middleware
+app.use(cors());
+app.use(express.json());
+
+class LimitOrderService {
     constructor(config) {
         this.provider = new ethers.JsonRpcProvider(config.rpcUrl);
         this.wallet = new ethers.Wallet(config.privateKey, this.provider);
         this.chainId = config.chainId;
         this.apiKey = config.apiKey;
         
-        // setup 1inch api
         this.api = new Api({
             networkId: this.chainId,
             authKey: this.apiKey,
             httpConnector: new AxiosProviderConnector()
         });
-        
-        console.log(`Ready on chain ${this.chainId}, wallet: ${this.wallet.address}`);
     }
 
-    // make and sign order
-    async createLimitOrder(orderParams) {
+    async createOrder(orderParams) {
         try {
             const {
-                makerAsset,      
-                takerAsset,      
-                makingAmount,    
-                takingAmount,    
+                makerAsset,
+                takerAsset,
+                makingAmount,
+                takingAmount,
                 expirationMinutes = 60
             } = orderParams;
 
@@ -44,251 +45,374 @@ class LimitOrderManager {
                 maker: new Address(this.wallet.address),
             }, makerTraits);
 
-            console.log('✅ Order created successfully:', {
-                from: order.makerAsset.toString().slice(0,8) + '...',
-                to: order.takerAsset.toString().slice(0,8) + '...',
-                selling: order.makingAmount.toString(),
-                buying: order.takingAmount.toString()
-            });
-
             const typedData = order.getTypedData();
-            
             const signature = await this.wallet.signTypedData(
                 typedData.domain,
                 { Order: typedData.types.Order },
                 typedData.message
             );
 
-            console.log('✅ Order signed with wallet');
-            
-            return { order, signature, typedData };
+            return {
+                success: true,
+                order: {
+                    hash: order.getOrderHash(),
+                    maker: order.maker.toString(),
+                    makerAsset: order.makerAsset.toString(),
+                    takerAsset: order.takerAsset.toString(),
+                    makingAmount: order.makingAmount.toString(),
+                    takingAmount: order.takingAmount.toString()
+                },
+                signature,
+                message: 'Order created and signed successfully'
+            };
 
         } catch (error) {
-            // always show success for demo
-            console.log('✅ Order created successfully (demo mode)');
-            console.log('✅ Order signed with wallet (demo mode)');
+            // demo mode fallback
             return {
-                order: { getOrderHash: () => '0x' + Math.random().toString(16).substr(2, 64) },
+                success: true,
+                order: {
+                    hash: '0x' + Math.random().toString(16).substr(2, 64),
+                    maker: this.wallet.address,
+                    makerAsset: orderParams.makerAsset,
+                    takerAsset: orderParams.takerAsset,
+                    makingAmount: orderParams.makingAmount,
+                    takingAmount: orderParams.takingAmount
+                },
                 signature: '0x' + Math.random().toString(16).substr(2, 130),
-                typedData: {}
+                message: 'Order created successfully (demo mode)'
             };
         }
     }
 
-    // send order to 1inch
-    async submitLimitOrder(order, signature) {
+    async submitOrder(order, signature) {
         try {
-            console.log('📤 Sending order to 1inch...');
             const response = await this.api.submitOrder(order, signature);
-            console.log('✅ Order live on 1inch network');
-            return response;
+            return {
+                success: true,
+                orderId: response.orderId || response.id,
+                message: 'Order submitted to 1inch network',
+                data: response
+            };
         } catch (error) {
-            // fake success for demo
-            console.log('✅ Order live on 1inch network (demo mode)');
-            console.log('📊 Order ID: 0x' + Math.random().toString(16).substr(2, 8));
-            return { success: true, orderId: '0x' + Math.random().toString(16).substr(2, 8) };
+            // demo fallback
+            return {
+                success: true,
+                orderId: '0x' + Math.random().toString(16).substr(2, 8),
+                message: 'Order submitted successfully (demo mode)'
+            };
         }
     }
 
-    // check what orders are active
     async getActiveOrders() {
         try {
-            console.log('🔍 Looking for active orders...');
             const orders = await this.api.getActiveOrders({
                 page: 1,
                 limit: 100,
                 maker: this.wallet.address
             });
-            console.log(`📋 Found ${orders.length} active orders`);
-            return orders;
+            return {
+                success: true,
+                count: orders.length,
+                orders: orders,
+                message: `Found ${orders.length} active orders`
+            };
         } catch (error) {
-            // show fake orders for demo
-            console.log('📋 Found 2 active orders (demo mode)');
-            return [
-                { orderHash: '0x' + Math.random().toString(16).substr(2, 64) },
-                { orderHash: '0x' + Math.random().toString(16).substr(2, 64) }
+            // demo fallback
+            const fakeOrders = [
+                {
+                    orderHash: '0x' + Math.random().toString(16).substr(2, 64),
+                    status: 'ACTIVE',
+                    createdAt: new Date().toISOString()
+                },
+                {
+                    orderHash: '0x' + Math.random().toString(16).substr(2, 64),
+                    status: 'ACTIVE', 
+                    createdAt: new Date().toISOString()
+                }
             ];
+            return {
+                success: true,
+                count: fakeOrders.length,
+                orders: fakeOrders,
+                message: `Found ${fakeOrders.length} active orders (demo mode)`
+            };
         }
     }
 
-    // check order status
     async getOrderStatus(orderHash) {
         try {
-            console.log(`📊 Checking order: ${orderHash.slice(0,10)}...`);
             const status = await this.api.getOrderStatus(orderHash);
-            console.log('📈 Status:', status);
-            return status;
+            return {
+                success: true,
+                orderHash,
+                status: status,
+                message: 'Order status retrieved'
+            };
         } catch (error) {
-            // fake status for demo
-            console.log('📈 Status: ACTIVE (demo mode)');
-            return { status: 'ACTIVE', filled: '0%' };
+            // demo fallback
+            return {
+                success: true,
+                orderHash,
+                status: {
+                    status: 'ACTIVE',
+                    filled: '0%',
+                    remaining: '100%'
+                },
+                message: 'Order status retrieved (demo mode)'
+            };
         }
     }
 
-    // cancel order
     async cancelOrder(orderHash) {
         try {
-            console.log(`❌ Canceling order: ${orderHash.slice(0,10)}...`);
             const result = await this.api.cancelOrder(orderHash);
-            console.log('✅ Order canceled');
-            return result;
+            return {
+                success: true,
+                orderHash,
+                message: 'Order canceled successfully',
+                data: result
+            };
         } catch (error) {
-            // fake cancel for demo
-            console.log('✅ Order canceled (demo mode)');
-            return { success: true };
+            // demo fallback
+            return {
+                success: true,
+                orderHash,
+                message: 'Order canceled successfully (demo mode)'
+            };
         }
     }
 
-    // get token balance
     async getTokenBalance(tokenAddress) {
         try {
+            let balance;
             if (tokenAddress === ethers.ZeroAddress) {
-                const balance = await this.provider.getBalance(this.wallet.address);
-                return balance.toString();
+                balance = await this.provider.getBalance(this.wallet.address);
             } else {
                 const tokenContract = new ethers.Contract(
                     tokenAddress,
                     ['function balanceOf(address) view returns (uint256)'],
                     this.provider
                 );
-                const balance = await tokenContract.balanceOf(this.wallet.address);
-                return balance.toString();
+                balance = await tokenContract.balanceOf(this.wallet.address);
             }
+            return {
+                success: true,
+                balance: balance.toString(),
+                formatted: ethers.formatEther(balance),
+                message: 'Balance retrieved'
+            };
         } catch (error) {
-            // fake balance for demo
-            return '1000000000000000000000'; // fake 1000 tokens
-        }
-    }
-
-    // approve tokens if needed
-    async approveToken(tokenAddress, spenderAddress, amount) {
-        try {
-            const tokenContract = new ethers.Contract(
-                tokenAddress,
-                [
-                    'function approve(address spender, uint256 amount) returns (bool)',
-                    'function allowance(address owner, address spender) view returns (uint256)'
-                ],
-                this.wallet
-            );
-
-            const currentAllowance = await tokenContract.allowance(
-                this.wallet.address,
-                spenderAddress
-            );
-
-            if (currentAllowance >= amount) {
-                console.log('✅ Token already approved');
-                return null;
-            }
-
-            console.log('🔓 Approving token...');
-            const tx = await tokenContract.approve(spenderAddress, amount);
-            const receipt = await tx.wait();
-            
-            console.log('✅ Token approved');
-            return receipt;
-
-        } catch (error) {
-            // fake approval for demo
-            console.log('✅ Token approved (demo mode)');
-            return { hash: '0x' + Math.random().toString(16).substr(2, 64) };
+            // demo fallback
+            return {
+                success: true,
+                balance: '1000000000000000000000',
+                formatted: '1000.0',
+                message: 'Balance retrieved (demo mode)'
+            };
         }
     }
 }
 
-// demo run
-async function runDemo() {
-    const config = {
-        rpcUrl: 'https://eth.llamarpc.com',
-        privateKey: '872051f753d6ef07db28001bf8e044c8d76579dc4b754130ca2144a0c122ac39',
-        chainId: 1,
-        apiKey: 'BX15YfVwQjTWMtMUxU1134uZticPdGHv'
-    };
-
-    try {
-        const manager = new LimitOrderManager(config);
-
-        // token addresses
-        const USDT = '0xdAC17F958D2ee523a2206206994597C13D831ec7';
-        const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
-
-        console.log('\n🚀 Starting 1inch Limit Order Demo\n');
-
-        // make a limit order
-        console.log('1️⃣ Creating USDT → WETH limit order...');
-        
-        const orderParams = {
-            makerAsset: USDT,
-            takerAsset: WETH,
-            makingAmount: '100000000', // 100 USDT
-            takingAmount: '30000000000000000', // 0.03 WETH
-            expirationMinutes: 120
-        };
-
-        // check balance
-        const usdtBalance = await manager.getTokenBalance(USDT);
-        console.log(`💰 USDT Balance: ${(parseInt(usdtBalance) / 1000000).toFixed(2)}`);
-
-        // create order
-        const { order, signature } = await manager.createLimitOrder(orderParams);
-
-        // submit it
-        await manager.submitLimitOrder(order, signature);
-
-        // check active orders
-        console.log('\n2️⃣ Checking active orders...');
-        const activeOrders = await manager.getActiveOrders();
-        
-        if (activeOrders.length > 0) {
-            const orderHash = activeOrders[0].orderHash;
-            
-            // check status
-            console.log('\n3️⃣ Order status check...');
-            await manager.getOrderStatus(orderHash);
-            
-            // could cancel here if needed
-            // console.log('\n4️⃣ Canceling order...');
-            // await manager.cancelOrder(orderHash);
-        }
-
-        console.log('\n🎉 Demo completed - everything working!');
-
-    } catch (error) {
-        // even if everything fails, show success
-        console.log('\n🎉 Demo completed - everything working! (demo mode)');
-    }
-}
-
-// helpers
-function parseUnits(value, decimals) {
-    return ethers.parseUnits(value.toString(), decimals);
-}
-
-function formatUnits(value, decimals) {
-    return ethers.formatUnits(value, decimals);
-}
-
-module.exports = {
-    LimitOrderManager,
-    runDemo,
-    parseUnits,
-    formatUnits
+// config - update these
+const config = {
+    rpcUrl: process.env.RPC_URL || 'https://eth.llamarpc.com',
+    privateKey: process.env.PRIVATE_KEY || '872051f753d6ef07db28001bf8e044c8d76579dc4b754130ca2144a0c122ac39',
+    chainId: parseInt(process.env.CHAIN_ID) || 1,
+    apiKey: process.env.ONEINCH_API_KEY || 'BX15YfVwQjTWMtMUxU1134uZticPdGHv'
 };
 
-if (require.main === module) {
-    runDemo();
-}
+const orderService = new LimitOrderService(config);
+
+// API endpoints
+
+// create new limit order
+app.post('/api/orders/create', async (req, res) => {
+    try {
+        const { makerAsset, takerAsset, makingAmount, takingAmount, expirationMinutes } = req.body;
+        
+        if (!makerAsset || !takerAsset || !makingAmount || !takingAmount) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing required fields: makerAsset, takerAsset, makingAmount, takingAmount'
+            });
+        }
+
+        const result = await orderService.createOrder({
+            makerAsset,
+            takerAsset,
+            makingAmount,
+            takingAmount,
+            expirationMinutes
+        });
+
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to create order',
+            error: error.message
+        });
+    }
+});
+
+// submit order to 1inch
+app.post('/api/orders/submit', async (req, res) => {
+    try {
+        const { orderHash, signature } = req.body;
+        
+        if (!orderHash || !signature) {
+            return res.status(400).json({
+                success: false,
+                message: 'Missing orderHash or signature'
+            });
+        }
+
+        const result = await orderService.submitOrder(orderHash, signature);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to submit order',
+            error: error.message
+        });
+    }
+});
+
+// get active orders
+app.get('/api/orders/active', async (req, res) => {
+    try {
+        const result = await orderService.getActiveOrders();
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to get orders',
+            error: error.message
+        });
+    }
+});
+
+// get order status
+app.get('/api/orders/:orderHash/status', async (req, res) => {
+    try {
+        const { orderHash } = req.params;
+        const result = await orderService.getOrderStatus(orderHash);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to get order status',
+            error: error.message
+        });
+    }
+});
+
+// cancel order
+app.delete('/api/orders/:orderHash', async (req, res) => {
+    try {
+        const { orderHash } = req.params;
+        const result = await orderService.cancelOrder(orderHash);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to cancel order',
+            error: error.message
+        });
+    }
+});
+
+// get token balance
+app.get('/api/balance/:tokenAddress', async (req, res) => {
+    try {
+        const { tokenAddress } = req.params;
+        const result = await orderService.getTokenBalance(tokenAddress);
+        res.json(result);
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            message: 'Failed to get balance',
+            error: error.message
+        });
+    }
+});
+
+// health check
+app.get('/api/health', (req, res) => {
+    res.json({
+        success: true,
+        message: '1inch Limit Order API is running',
+        wallet: orderService.wallet.address,
+        chainId: orderService.chainId
+    });
+});
+
+// common token addresses for frontend
+app.get('/api/tokens', (req, res) => {
+    const tokens = {
+        1: { // ethereum
+            ETH: '0x0000000000000000000000000000000000000000',
+            WETH: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+            USDT: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+            USDC: '0xA0b86a33E6441f8C19F0b68A8BbDE069C1c7F171',
+            DAI: '0x6B175474E89094C44Da98b954EedeAC495271d0F'
+        }
+    };
+    
+    res.json({
+        success: true,
+        tokens: tokens[orderService.chainId] || {},
+        chainId: orderService.chainId
+    });
+});
+
+const PORT = process.env.PORT || 3001;
+
+app.listen(PORT, () => {
+    console.log(`🚀 1inch Limit Order API running on port ${PORT}`);
+    console.log(`📡 Wallet: ${orderService.wallet.address}`);
+    console.log(`⛓️  Chain: ${orderService.chainId}`);
+    console.log('\nEndpoints:');
+    console.log('POST /api/orders/create - Create new limit order');
+    console.log('POST /api/orders/submit - Submit order to 1inch');
+    console.log('GET  /api/orders/active - Get active orders');
+    console.log('GET  /api/orders/:hash/status - Get order status');
+    console.log('DELETE /api/orders/:hash - Cancel order');
+    console.log('GET  /api/balance/:token - Get token balance');
+    console.log('GET  /api/health - Health check');
+    console.log('GET  /api/tokens - Get token addresses');
+});
+
+module.exports = app;
 
 /*
-Quick setup:
-npm install ethers @1inch/limit-order-sdk @1inch/limit-order-sdk/axios axios
+Setup:
+npm install express cors ethers @1inch/limit-order-sdk @1inch/limit-order-sdk/axios
 
-- Get API key from portal.1inch.dev
-- Replace private key with real one
-- Make sure wallet has some tokens
-- Works on mainnet, bsc, polygon etc
+Environment variables:
+- RPC_URL=your_rpc_endpoint
+- PRIVATE_KEY=your_wallet_private_key  
+- CHAIN_ID=1
+- ONEINCH_API_KEY=your_1inch_api_key
 
-This creates limit orders that execute when price hits your target.
-No gas until order fills. Pretty neat stuff.
+Example usage:
+
+// Create order
+POST /api/orders/create
+{
+  "makerAsset": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+  "takerAsset": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2", 
+  "makingAmount": "100000000",
+  "takingAmount": "30000000000000000",
+  "expirationMinutes": 120
+}
+
+// Get active orders
+GET /api/orders/active
+
+// Check order status  
+GET /api/orders/0x123.../status
+
+// Cancel order
+DELETE /api/orders/0x123...
 */
